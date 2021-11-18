@@ -101,8 +101,7 @@ class QRSacAlgorithm(SacAlgorithm):
 
         assert self._act_type == ActionType.Continuous
 
-        target_critic = target_critics.mean(1).reshape(inputs.reward.shape)
-        target_critic = target_critic.detach()
+        target_critic = target_critics.detach()
 
         state = SacCriticState(
             critics=critics_state, target_critics=target_critics_state)
