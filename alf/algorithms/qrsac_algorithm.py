@@ -43,11 +43,12 @@ class QRSacAlgorithm(SacAlgorithm):
         assert not self.has_multidim_reward()
 
         if replica_min:
-            if self.has_multidim_reward():
-                sign = self.reward_weights.sign()
-                critics = (critics * sign).min(dim=1)[0] * sign
-            else:
-                critics = critics.min(dim=1)[0]
+            # Select the replica with the minimum mean of the q_value
+            # shape [B, replicas]
+            critic_mean = critics.mean(dim=-1)
+            # shape [B]
+            index = torch.min(critic_mean, dim=-1)[1]
+            critics = critics[torch.arange(len(index)), index]
 
         # The returns have the following shapes in different circumstances:
         # [replica_min=True]
@@ -56,7 +57,8 @@ class QRSacAlgorithm(SacAlgorithm):
         #   continuous: critics shape [B, replicas, num_quantiles]
         return critics, critics_state
 
-    def _actor_train_step(self, inputs: TimeStep, state, action, log_pi):
+    def _actor_train_step(self, inputs: TimeStep, state, action, critics,
+                          log_pi, action_distribution):
         neg_entropy = sum(nest.flatten(log_pi))
 
         assert self._act_type == ActionType.Continuous
@@ -65,9 +67,11 @@ class QRSacAlgorithm(SacAlgorithm):
         continuous_log_pi = log_pi
         cont_alpha = torch.exp(self._log_alpha).detach()
 
-        # This sum() will reduce all dims so q_value can be any rank
-        assert q_value.ndim == 3
-        dqda = nest_utils.grad(action, q_value.mean(1).sum())
+        assert q_value.ndim == 2, q_value.shape
+        # Expect the shape to be [B, n_quantiles].
+        # We need to first take the mean across the quantiles to 
+        # obtain the mean of q_value
+        dqda = nest_utils.grad(action, q_value.mean(-1).sum())
 
         def actor_loss_fn(dqda, action):
             if self._dqda_clipping:

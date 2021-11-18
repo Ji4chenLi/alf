@@ -17,7 +17,6 @@ import torch.nn as nn
 
 import alf
 from alf.data_structures import LossInfo, StepType
-from alf.utils.losses import element_wise_huber_loss
 from alf.utils import tensor_utils, value_ops
 from alf.utils.summary_utils import safe_mean_hist_summary
 
@@ -88,15 +87,54 @@ class OneStepQRLoss(nn.Module):
             # [T, B]
             discounts = info.discount * self._gamma
 
-        returns = value_ops.discounted_return(
-            rewards=info.reward,
+        target_value_shape = target_value.shape
+        rewards = info.reward.unsqueeze(-1).expand(target_value_shape)
+        step_types = info.step_type.unsqueeze(-1).expand(target_value_shape)
+        discounts = discounts.unsqueeze(-1).expand(target_value_shape)
+
+        returns = value_ops.one_step_discounted_return(
+            rewards=rewards,
             values=target_value,
-            step_types=info.step_type,
+            step_types=step_types,
             discounts=discounts)
         value = value[:-1]
 
+        # Get the cummulative prob
+        assert value.ndim == 3, value.shape
+        n_quantiles = value.shape[-1]
+        # Cumulative probabilities to calculate quantiles.
+        cum_prob = (torch.arange(
+            n_quantiles, device=value.device, dtype=torch.float
+            ) + 0.5) / n_quantiles
+
+        # For QR-DQN, current_quantiles have a shape
+        # (T, B, n_quantiles), and make cum_prob
+        # broadcastable to
+        # (T, B, n_quantiles, n_target_quantiles)
+        cum_prob = cum_prob.view(1, 1, -1, 1)
+
+        # (T, B, n_quantiles, n_target_quantiles)
+        element_wise_delta = returns.detach().unsqueeze(-2) - value.unsqueeze(-1)
+        abs_element_wise_delta = torch.abs(element_wise_delta)
+        huber_loss = torch.where(
+            abs_element_wise_delta > 1,
+            element_wise_delta - 0.5,
+            element_wise_delta ** 2 * 0.5
+        )
+
+        loss = torch.abs(cum_prob - (element_wise_delta.detach() < 0).float()) * huber_loss
+
+        if self._sum_over_quantiles:
+            loss = loss.sum(dim=-2).mean(dim=-1)
+        else:
+            loss = loss.mean(dim=-2).mean(dim=-1)
+
+        # The shape of the loss expected by Algorith.update_with_gradient is
+        # [T, B], so we need to augment it with additional zeros.
+        loss = tensor_utils.tensor_extend_zero(loss)
+
         if self._debug_summaries and alf.summary.should_record_summaries():
-            mask = info.step_type[:-1] != StepType.LAST
+            mask = step_types[:-1] != StepType.LAST
             with alf.summary.scope(self._name):
 
                 def _summarize(v, r, td, suffix):
@@ -107,42 +145,13 @@ class OneStepQRLoss(nn.Module):
                     safe_mean_hist_summary('returns' + suffix, r, mask)
                     safe_mean_hist_summary("td_error" + suffix, td, mask)
 
-                if value.ndim == 2:
-                    _summarize(value, returns, returns - value, '')
-                else:
-                    td = returns - value
-                    for i in range(value.shape[2]):
-                        suffix = '/' + str(i)
-                        _summarize(value[..., i], returns[..., i], td[..., i],
-                                   suffix)
+                for i in range(value.shape[-2]):
+                    for j in range(value.shape[-1]):
+                        suffix = f'/{i}-{j}'
+                        _summarize(
+                            value[..., i, j],
+                            returns[..., i, j],
+                            element_wise_delta[..., i, j],
+                            suffix)
 
-        # Get the cummulative prob
-        assert value.ndim == 2
-        n_quantiles = value.shape[-1]
-        # Cumulative probabilities to calculate quantiles.
-        cum_prob = (torch.arange(
-            n_quantiles, device=n_quantiles.device, dtype=torch.float
-            ) + 0.5) / n_quantiles
-
-        # For QR-DQN, current_quantiles have a shape
-        # (T, B, n_quantiles), and make cum_prob
-        # broadcastable to
-        # (T, B, n_quantiles, n_target_quantiles)
-        cum_prob = cum_prob.view(1, -1, 1)
-
-        element_wise_delta = returns.detach().unsqueeze(-2) - value.unsqueeze(-1)
-        huber_loss = element_wise_huber_loss(element_wise_delta)
-        # (T, B, n_quantiles, n_target_quantiles)
-        loss = torch.abs(cum_prob - (element_wise_delta.detach() < 0).float()) * huber_loss
-
-        if self._sum_over_quantiles:
-            loss = loss.sum(dim=-2)
-        else:
-            loss = loss.mean(dim=-2)
-
-        loss.mean(dim=2)
-
-        # The shape of the loss expected by Algorith.update_with_gradient is
-        # [T, B], so we need to augment it with additional zeros.
-        loss = tensor_utils.tensor_extend_zero(loss)
         return LossInfo(loss=loss, extra=loss)

@@ -59,8 +59,6 @@ alf.config(
     critic_optimizer=AdamTF(lr=3e-4),
     alpha_optimizer=AdamTF(lr=3e-4))
 
-alf.config('OneStepTDLoss', td_error_loss_fn=element_wise_squared_loss)
-
 # training config
 alf.config('Agent', rl_algorithm_cls=QRSacAlgorithm)
 
