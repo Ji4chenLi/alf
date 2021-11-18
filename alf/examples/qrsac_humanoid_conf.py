@@ -59,8 +59,11 @@ alf.config(
     critic_optimizer=AdamTF(lr=3e-4),
     alpha_optimizer=AdamTF(lr=3e-4))
 
+alf.config('QRSacAlgorithm._compute_critics', min_based_on_q_mean=True)
+
 # training config
 alf.config('Agent', rl_algorithm_cls=QRSacAlgorithm)
+
 
 alf.config(
     'TrainerConfig',

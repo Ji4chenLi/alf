@@ -28,13 +28,20 @@ from alf.utils import losses, math_ops
 class QRSacAlgorithm(SacAlgorithm):
     """Quantile Soft Actor Critic algorithm
     """
-
+    @alf.configurable
     def _compute_critics(self,
                          critic_net,
                          observation,
                          action,
                          critics_state,
-                         replica_min=True):
+                         replica_min=True,
+                         min_based_on_q_mean=True):
+        """
+        Args:
+            min_based_on_q_mean (bool): If True, select all quantiles of
+                the q replica with the lowest q mean; Else, directly conduct
+                argmin along the dimension of q replicas
+        """
         assert  self._act_type == ActionType.Continuous
         observation = (observation, action)
         # continuous: critics shape [B, replicas, num_quantiles]
@@ -43,12 +50,13 @@ class QRSacAlgorithm(SacAlgorithm):
         assert not self.has_multidim_reward()
 
         if replica_min:
-            # Select the replica with the minimum mean of the q_value
-            # shape [B, replicas]
-            critic_mean = critics.mean(dim=-1)
-            # shape [B]
-            index = torch.min(critic_mean, dim=-1)[1]
-            critics = critics[torch.arange(len(index)), index]
+            if min_based_on_q_mean:
+                # shape [B, replicas]
+                critic_mean = critics.mean(dim=-1)
+                index = torch.min(critic_mean, dim=-1)[1]
+                critics = critics[torch.arange(len(index)), index]
+            else:
+                critics = critics.min(dim=1)[0]
 
         # The returns have the following shapes in different circumstances:
         # [replica_min=True]

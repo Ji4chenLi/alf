@@ -118,7 +118,7 @@ class OneStepQRLoss(nn.Module):
         abs_element_wise_delta = torch.abs(element_wise_delta)
         huber_loss = torch.where(
             abs_element_wise_delta > 1,
-            element_wise_delta - 0.5,
+            abs_element_wise_delta - 0.5,
             element_wise_delta ** 2 * 0.5
         )
 
